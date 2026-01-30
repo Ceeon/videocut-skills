@@ -74,19 +74,38 @@ if (deleteFile && fs.existsSync(deleteFile)) {
   console.log('映射后字数:', outputWords.length);
 }
 
-// 添加空白标记
+// 添加空白标记（>0.5秒的静音按1秒拆分，便于精细控制）
 const wordsWithGaps = [];
 let lastEnd = 0;
 
 for (const word of outputWords) {
-  if (word.start - lastEnd > 0.1) {
-    wordsWithGaps.push({
-      text: '',
-      start: Math.round(lastEnd * 100) / 100,
-      end: Math.round(word.start * 100) / 100,
-      isGap: true
-    });
+  const gapDuration = word.start - lastEnd;
+
+  if (gapDuration > 0.1) {
+    // 如果静音 >0.5秒，按1秒拆分
+    if (gapDuration > 0.5) {
+      let gapStart = lastEnd;
+      while (gapStart < word.start) {
+        const gapEnd = Math.min(gapStart + 1, word.start);
+        wordsWithGaps.push({
+          text: '',
+          start: Math.round(gapStart * 100) / 100,
+          end: Math.round(gapEnd * 100) / 100,
+          isGap: true
+        });
+        gapStart = gapEnd;
+      }
+    } else {
+      // <1秒的静音保持原样
+      wordsWithGaps.push({
+        text: '',
+        start: Math.round(lastEnd * 100) / 100,
+        end: Math.round(word.start * 100) / 100,
+        isGap: true
+      });
+    }
   }
+
   wordsWithGaps.push({
     text: word.text,
     start: word.start,

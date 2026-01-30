@@ -111,7 +111,7 @@ node "$SKILL_DIR/scripts/generate_subtitles.js" volcengine_result.json
 cd ..
 ```
 
-### 步骤 5: AI 分析口误（手动，禁止脚本）
+### 步骤 5: 分析口误（脚本+AI）
 
 #### 5.1 生成易读格式
 
@@ -137,39 +137,97 @@ require('fs').writeFileSync('readable.txt', output.join('\\n'));
 
 先读 `用户习惯/` 目录下所有规则文件。
 
-#### 5.3 分段读取分析
+#### 5.3 生成句子列表（关键步骤）
 
-每次读取 300 行，逐段分析：
+**必须先分句，再分析**。按静音切分成句子列表：
+
+```bash
+node -e "
+const data = require('../1_转录/subtitles_words.json');
+let sentences = [];
+let curr = { text: '', startIdx: -1, endIdx: -1 };
+
+data.forEach((w, i) => {
+  const isLongGap = w.isGap && (w.end - w.start) >= 0.5;
+  if (isLongGap) {
+    if (curr.text.length > 0) sentences.push({...curr});
+    curr = { text: '', startIdx: -1, endIdx: -1 };
+  } else if (!w.isGap) {
+    if (curr.startIdx === -1) curr.startIdx = i;
+    curr.text += w.text;
+    curr.endIdx = i;
+  }
+});
+if (curr.text.length > 0) sentences.push(curr);
+
+sentences.forEach((s, i) => {
+  console.log(i + '|' + s.startIdx + '-' + s.endIdx + '|' + s.text);
+});
+" > sentences.txt
+```
+
+#### 5.4 脚本自动标记静音（必须先执行）
+
+```bash
+node -e "
+const words = require('../1_转录/subtitles_words.json');
+const selected = [];
+words.forEach((w, i) => {
+  if (w.isGap && (w.end - w.start) >= 0.5) selected.push(i);
+});
+require('fs').writeFileSync('auto_selected.json', JSON.stringify(selected, null, 2));
+console.log('≥0.5s静音数量:', selected.length);
+"
+```
+
+→ 输出 `auto_selected.json`（只含静音 idx）
+
+#### 5.5 AI 分析口误（追加到 auto_selected.json）
+
+**检测规则（按优先级）**：
+
+| # | 类型 | 判断方法 | 删除范围 |
+|---|------|----------|----------|
+| 1 | 重复句 | 相邻句子开头≥5字相同 | 较短的**整句** |
+| 2 | 隔一句重复 | 中间是残句时，比对前后句 | 前句+残句 |
+| 3 | 残句 | 话说一半+静音 | **整个残句** |
+| 4 | 句内重复 | A+中间+A 模式 | 前面部分 |
+| 5 | 卡顿词 | 那个那个、就是就是 | 前面部分 |
+| 6 | 重说纠正 | 部分重复/否定纠正 | 前面部分 |
+| 7 | 语气词 | 嗯、啊、那个 | 标记但不自动删 |
+
+**核心原则**：
+- **先分句，再比对**：用 sentences.txt 比对相邻句子
+- **整句删除**：残句、重复句都要删整句，不只是删异常的几个字
+
+**分段分析（循环执行）**：
 
 ```
-Read readable.txt offset=0 limit=300
-Read readable.txt offset=300 limit=300
-...
+1. Read readable.txt offset=N limit=300
+2. 结合 sentences.txt 分析这300行
+3. 追加口误 idx 到 auto_selected.json
+4. 记录到 口误分析.md
+5. N += 300，回到步骤1
 ```
 
-#### 5.4 边分析边记录
+🚨 **关键警告：行号 ≠ idx**
 
-创建 `口误分析.md` 记录删除清单：
+```
+readable.txt 格式: idx|内容|时间
+                   ↑ 用这个值
+
+行号1500 → "1568|[静1.02s]|..."  ← idx是1568，不是1500！
+```
+
+**口误分析.md 格式：**
 
 ```markdown
-| idx范围 | 时间 | 类型 | 内容 | 处理 |
-|---------|------|------|------|------|
-| 0 | 0.00-1.44 | 静音1.44s | 开头静音 | 删 |
-| 64-74 | 15.80-17.66 | 重复句 | "这是我剪出来的一个案例" | 删 |
+## 第N段 (行号范围)
+
+| idx | 时间 | 类型 | 内容 | 处理 |
+|-----|------|------|------|------|
+| 65-75 | 15.80-17.66 | 重复句 | "这是我剪出来的一个案例" | 删 |
 ```
-
-#### 5.5 检测规则（按优先级）
-
-1. **静音 ≥1s** → 按1秒格子拆分输出
-2. **重复句** → 相邻句子开头≥5字相同，删短的
-3. **句内重复** → A+中间+A 模式，删前面
-4. **卡顿词** → 那个那个、就是就是，删前面
-5. **重说纠正** → 部分重复/否定纠正，删前面
-6. **语气词** → 标记但不自动删，留给用户
-
-#### 5.6 生成预选索引
-
-分析完成后，汇总所有要删除的 idx 到 `auto_selected.json`
 
 ### 步骤 6-7: 审核
 

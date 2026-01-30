@@ -3,14 +3,22 @@
  * 生成审核网页（wavesurfer.js 版本）
  *
  * 用法: node generate_review.js <subtitles_words.json> [auto_selected.json] [audio_file]
- * 输出: review.html
+ * 输出: review.html, audio.mp3（复制到当前目录）
  */
 
 const fs = require('fs');
+const path = require('path');
 
 const subtitlesFile = process.argv[2] || 'subtitles_words.json';
 const autoSelectedFile = process.argv[3] || 'auto_selected.json';
 const audioFile = process.argv[4] || 'audio.mp3';
+
+// 复制音频文件到当前目录（避免相对路径问题）
+const audioBaseName = 'audio.mp3';
+if (audioFile !== audioBaseName && fs.existsSync(audioFile)) {
+  fs.copyFileSync(audioFile, audioBaseName);
+  console.log('📁 已复制音频到当前目录:', audioBaseName);
+}
 
 if (!fs.existsSync(subtitlesFile)) {
   console.error('❌ 找不到字幕文件:', subtitlesFile);
@@ -188,7 +196,7 @@ const html = `<!DOCTYPE html>
       barWidth: 2,
       barGap: 1,
       barRadius: 2,
-      url: '${audioFile}'
+      url: '${audioBaseName}'
     });
 
     const timeDisplay = document.getElementById('time');
@@ -390,7 +398,7 @@ const html = `<!DOCTYPE html>
     async function executeCut() {
       if (!confirm('确认执行剪辑？')) return;
 
-      // 生成删除列表
+      // 直接发送原始时间戳，不做合并（和预览一致）
       const segments = [];
       const sortedSelected = Array.from(selected).sort((a, b) => a - b);
       sortedSelected.forEach(i => {
@@ -398,26 +406,11 @@ const html = `<!DOCTYPE html>
         segments.push({ start: word.start, end: word.end });
       });
 
-      // 合并相邻片段
-      const merged = [];
-      for (const seg of segments) {
-        if (merged.length === 0) {
-          merged.push({ ...seg });
-        } else {
-          const last = merged[merged.length - 1];
-          if (Math.abs(seg.start - last.end) < 0.05) {
-            last.end = seg.end;
-          } else {
-            merged.push({ ...seg });
-          }
-        }
-      }
-
       try {
         const res = await fetch('/api/cut', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(merged)
+          body: JSON.stringify(segments)  // 直接发原始数据
         });
         const data = await res.json();
         if (data.success) {
