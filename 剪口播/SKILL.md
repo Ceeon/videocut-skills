@@ -24,9 +24,28 @@ pos: 转录+识别，到用户网页审核为止
 用户: 处理一下这个视频
 ```
 
+## 输出目录结构
+
+```
+output/
+└── YYYY-MM-DD_视频名/     # 日期+视频名
+    ├── 剪口播/            # 本 skill 输出
+    │   ├── audio.mp3
+    │   ├── volcengine_result.json
+    │   ├── subtitles_words.json
+    │   ├── auto_selected.json
+    │   └── review.html
+    └── 字幕/              # 字幕 skill 输出
+        └── ...
+```
+
+**规则**：已有文件夹则复用，否则新建。
+
 ## 流程
 
 ```
+0. 创建输出目录
+    ↓
 1. 提取音频 (ffmpeg)
     ↓
 2. 上传获取公网 URL (uguu.se)
@@ -46,27 +65,40 @@ pos: 转录+识别，到用户网页审核为止
 
 ## 执行步骤
 
+### 步骤 0: 创建输出目录
+
+```bash
+# 变量设置（根据实际视频调整）
+VIDEO_PATH="/path/to/视频.mp4"
+VIDEO_NAME=$(basename "$VIDEO_PATH" .mp4)
+DATE=$(date +%Y-%m-%d)
+OUTPUT_DIR="output/${DATE}_${VIDEO_NAME}/剪口播"
+
+# 创建目录（已存在则跳过）
+mkdir -p "$OUTPUT_DIR"
+cd "$OUTPUT_DIR"
+```
+
 ### 步骤 1-3: 转录
 
 ```bash
-cd /Users/chengfeng/Desktop/AIos/剪辑Agent/.claude/skills/剪口播
-
 # 1. 提取音频（文件名有冒号需加 file: 前缀）
-ffmpeg -i "file:视频.mp4" -vn -acodec libmp3lame -y audio.mp3
+ffmpeg -i "file:$VIDEO_PATH" -vn -acodec libmp3lame -y audio.mp3
 
 # 2. 上传获取公网 URL
 curl -s -F "files[]=@audio.mp3" https://uguu.se/upload
 # 返回: {"success":true,"files":[{"url":"https://h.uguu.se/xxx.mp3"}]}
 
 # 3. 调用火山引擎 API
-./scripts/volcengine_transcribe.sh "https://h.uguu.se/xxx.mp3"
+SKILL_DIR="/Users/chengfeng/Desktop/AIos/剪辑Agent/.claude/skills/剪口播"
+"$SKILL_DIR/scripts/volcengine_transcribe.sh" "https://h.uguu.se/xxx.mp3"
 # 输出: volcengine_result.json
 ```
 
 ### 步骤 4: 生成字幕
 
 ```bash
-node scripts/generate_subtitles.js volcengine_result.json
+node "$SKILL_DIR/scripts/generate_subtitles.js" volcengine_result.json
 # 输出: subtitles_words.json
 ```
 
@@ -88,10 +120,10 @@ node scripts/generate_subtitles.js volcengine_result.json
 
 ```bash
 # 6. 生成审核网页
-node scripts/generate_review.js subtitles_words.json auto_selected.json audio.mp3
+node "$SKILL_DIR/scripts/generate_review.js" subtitles_words.json auto_selected.json audio.mp3
 
 # 7. 启动审核服务器
-node scripts/review_server.js 8899 视频.mp4
+node "$SKILL_DIR/scripts/review_server.js" 8899 "$VIDEO_PATH"
 # 打开 http://localhost:8899
 ```
 
