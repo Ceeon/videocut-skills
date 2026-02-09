@@ -74,10 +74,20 @@ const server = http.createServer((req, res) => {
           });
         }
 
+        // 获取剪辑前后的时长信息
+        const originalDuration = parseFloat(execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "file:${VIDEO_FILE}"`).toString().trim());
+        const newDuration = parseFloat(execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "file:${outputFile}"`).toString().trim());
+        const deletedDuration = originalDuration - newDuration;
+        const savedPercent = ((deletedDuration / originalDuration) * 100).toFixed(1);
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           success: true,
           output: outputFile,
+          originalDuration: originalDuration.toFixed(2),
+          newDuration: newDuration.toFixed(2),
+          deletedDuration: deletedDuration.toFixed(2),
+          savedPercent: savedPercent,
           message: `剪辑完成: ${outputFile}`
         }));
 
@@ -131,6 +141,51 @@ const server = http.createServer((req, res) => {
   });
   fs.createReadStream(filePath).pipe(res);
 });
+
+// 检测可用的硬件编码器
+function detectEncoder() {
+  const platform = process.platform;
+  const encoders = [];
+
+  // 根据平台确定候选编码器
+  if (platform === 'darwin') {
+    encoders.push({ name: 'h264_videotoolbox', args: '-q:v 60', label: 'VideoToolbox (macOS)' });
+  } else if (platform === 'win32') {
+    encoders.push({ name: 'h264_nvenc', args: '-preset p4 -cq 20', label: 'NVENC (NVIDIA)' });
+    encoders.push({ name: 'h264_qsv', args: '-global_quality 20', label: 'QSV (Intel)' });
+    encoders.push({ name: 'h264_amf', args: '-quality balanced', label: 'AMF (AMD)' });
+  } else {
+    // Linux
+    encoders.push({ name: 'h264_nvenc', args: '-preset p4 -cq 20', label: 'NVENC (NVIDIA)' });
+    encoders.push({ name: 'h264_vaapi', args: '-qp 20', label: 'VAAPI (Linux)' });
+  }
+
+  // 软件编码兜底
+  encoders.push({ name: 'libx264', args: '-preset fast -crf 18', label: 'x264 (软件)' });
+
+  // 检测哪个可用
+  for (const enc of encoders) {
+    try {
+      execSync(`ffmpeg -hide_banner -encoders 2>/dev/null | grep ${enc.name}`, { stdio: 'pipe' });
+      console.log(`🎯 检测到编码器: ${enc.label}`);
+      return enc;
+    } catch (e) {
+      // 该编码器不可用，继续检测下一个
+    }
+  }
+
+  // 默认返回软件编码
+  return { name: 'libx264', args: '-preset fast -crf 18', label: 'x264 (软件)' };
+}
+
+// 缓存编码器检测结果
+let cachedEncoder = null;
+function getEncoder() {
+  if (!cachedEncoder) {
+    cachedEncoder = detectEncoder();
+  }
+  return cachedEncoder;
+}
 
 // 内置 FFmpeg 剪辑逻辑（filter_complex 精确剪辑 + buffer + crossfade）
 function executeFFmpegCut(input, deleteList, output) {
@@ -222,9 +277,10 @@ function executeFFmpegCut(input, deleteList, output) {
 
   const filterComplex = filters.join(';');
 
-  console.log('✂️ 执行 FFmpeg 精确剪辑（带 buffer + crossfade）...');
+  const encoder = getEncoder();
+  console.log(`✂️ 执行 FFmpeg 精确剪辑（${encoder.label}）...`);
 
-  const cmd = `ffmpeg -y -i "file:${input}" -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v libx264 -preset fast -crf 18 -c:a aac -b:a 192k "file:${output}"`;
+  const cmd = `ffmpeg -y -i "file:${input}" -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v ${encoder.name} ${encoder.args} -c:a aac -b:a 192k "file:${output}"`;
 
   try {
     execSync(cmd, { stdio: 'pipe' });
@@ -249,7 +305,8 @@ function executeFFmpegCutFallback(input, keepSegments, output) {
       const partFile = path.join(tmpDir, `part${i.toString().padStart(4, '0')}.mp4`);
       const segDuration = seg.end - seg.start;
 
-      const cmd = `ffmpeg -y -ss ${seg.start.toFixed(3)} -i "file:${input}" -t ${segDuration.toFixed(3)} -c:v libx264 -preset fast -crf 18 -c:a aac -b:a 128k -avoid_negative_ts make_zero "${partFile}"`;
+      const encoder = getEncoder();
+      const cmd = `ffmpeg -y -ss ${seg.start.toFixed(3)} -i "file:${input}" -t ${segDuration.toFixed(3)} -c:v ${encoder.name} ${encoder.args} -c:a aac -b:a 128k -avoid_negative_ts make_zero "${partFile}"`;
 
       console.log(`切割片段 ${i + 1}/${keepSegments.length}: ${seg.start.toFixed(2)}s - ${seg.end.toFixed(2)}s`);
       execSync(cmd, { stdio: 'pipe' });

@@ -9,7 +9,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, spawn } = require('child_process');
 
 const PORT = process.argv[2] || 8898;
 const VIDEO_PATH = process.argv[3] || '';
@@ -90,7 +90,27 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // API: 烧录字幕
+  // API: 获取视频信息（时长+分辨率+帧率，用于预估烧录时间）
+  if (req.url === '/api/video-info') {
+    try {
+      const dur = parseFloat(execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "file:${VIDEO_PATH}"`).toString().trim());
+      const streamInfo = execSync(`ffprobe -v error -show_entries stream=width,height,r_frame_rate -select_streams v:0 -of csv=p=0 "file:${VIDEO_PATH}"`).toString().trim();
+      const parts = streamInfo.split(',');
+      const width = parseInt(parts[0]) || 1920;
+      const height = parseInt(parts[1]) || 1080;
+      const fpsStr = parts[2] || '30/1';
+      const fpsParts = fpsStr.split('/');
+      const fps = fpsParts.length === 2 ? parseInt(fpsParts[0]) / parseInt(fpsParts[1]) : parseFloat(fpsStr);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ duration: dur, width, height, fps: Math.round(fps) }));
+    } catch (err) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ duration: 0, width: 1920, height: 1080, fps: 30 }));
+    }
+    return;
+  }
+
+  // API: 烧录字幕（SSE 实时进度）
   if (req.method === 'POST' && req.url === '/api/burn') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -114,16 +134,70 @@ const server = http.createServer((req, res) => {
         fs.writeFileSync(readablePath, readable);
         console.log('📝 已保存字幕稿:', readablePath);
 
-        // 烧录
+        // 获取总帧数（用时长 × 帧率估算，比 -count_frames 快得多）
+        let totalFrames = 0;
+        try {
+          const dur = parseFloat(execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "file:${VIDEO_PATH}"`).toString().trim());
+          const fpsStr = execSync(`ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "file:${VIDEO_PATH}"`).toString().trim();
+          const fpsParts = fpsStr.split('/');
+          const fps = fpsParts.length === 2 ? parseInt(fpsParts[0]) / parseInt(fpsParts[1]) : 30;
+          totalFrames = Math.round(dur * fps);
+        } catch(e) { totalFrames = 0; }
+
+        // SSE 响应头
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        });
+
         const outputPath = './3_输出/' + baseName + '_字幕.mp4';
-        const cmd = `ffmpeg -i "${VIDEO_PATH}" -vf "subtitles='${srtPath}':force_style='FontSize=22,FontName=PingFang SC,Bold=1,PrimaryColour=&H0000deff,OutlineColour=&H00000000,Outline=${outlineVal},Alignment=2,MarginV=30'" -c:a copy -y "${outputPath}"`;
+        const args = ['-i', VIDEO_PATH, '-vf', `subtitles='${srtPath}':force_style='FontSize=22,FontName=PingFang SC,Bold=1,PrimaryColour=&H0000deff,OutlineColour=&H00000000,Outline=${outlineVal},Alignment=2,MarginV=30'`, '-c:a', 'copy', '-y', outputPath];
 
         console.log('🎬 烧录字幕...');
-        execSync(cmd, { stdio: 'pipe' });
-        console.log('✅ 完成:', outputPath);
+        const startTime = Date.now();
+        const proc = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, path: outputPath, srtPath, readablePath }));
+        // 解析 ffmpeg stderr 进度
+        let lastProgress = '';
+        proc.stderr.on('data', (data) => {
+          const line = data.toString();
+          const frameMatch = line.match(/frame=\s*(\d+)/);
+          const speedMatch = line.match(/speed=\s*([\d.]+)x/);
+          const fpsMatch = line.match(/fps=\s*([\d.]+)/);
+          if (frameMatch) {
+            const frame = parseInt(frameMatch[1]);
+            const speed = speedMatch ? parseFloat(speedMatch[1]) : 0;
+            const fps = fpsMatch ? parseFloat(fpsMatch[1]) : 0;
+            const percent = totalFrames > 0 ? Math.min(99, Math.round(frame / totalFrames * 100)) : 0;
+            const elapsed = (Date.now() - startTime) / 1000;
+            let remaining = 0;
+            if (percent > 0) remaining = Math.round(elapsed / percent * (100 - percent));
+            const progress = JSON.stringify({ frame, totalFrames, percent, speed, fps, elapsed: Math.round(elapsed), remaining });
+            if (progress !== lastProgress) {
+              res.write(`data: ${progress}\n\n`);
+              lastProgress = progress;
+            }
+          }
+        });
+
+        proc.on('close', (code) => {
+          const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+          if (code === 0) {
+            console.log(`✅ 完成: ${outputPath} (耗时 ${elapsed}s)`);
+            res.write(`data: ${JSON.stringify({ done: true, path: outputPath, srtPath, readablePath, elapsed })}\n\n`);
+          } else {
+            console.error(`❌ 烧录失败 (exit code ${code})`);
+            res.write(`data: ${JSON.stringify({ error: `ffmpeg exit code ${code}` })}\n\n`);
+          }
+          res.end();
+        });
+
+        proc.on('error', (err) => {
+          res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+          res.end();
+        });
+
       } catch (err) {
         console.error('❌ 烧录失败:', err.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -246,6 +320,11 @@ function generateHTML() {
 
     .status { padding: 10px 15px; background: #1a3a1a; color: #4CAF50; font-size: 12px; }
     .status.error { background: #3a1a1a; color: #f44336; }
+    .progress-wrap { display:none; margin-top:6px; }
+    .progress-wrap.active { display:block; }
+    .progress-bar { height:6px; background:#333; border-radius:3px; overflow:hidden; }
+    .progress-bar-fill { height:100%; background:#4CAF50; border-radius:3px; transition:width 0.3s; width:0%; }
+    .progress-text { font-size:12px; color:#aaa; margin-top:4px; display:flex; justify-content:space-between; }
   </style>
 </head>
 <body>
@@ -269,6 +348,10 @@ function generateHTML() {
         <label style="margin-left:10px; font-size:14px;">描边: <input type="number" id="outline" value="2" min="1" max="5" style="width:50px;padding:5px;background:#333;border:none;color:white;border-radius:4px;"></label>
       </div>
       <div class="status" id="status">就绪</div>
+      <div class="progress-wrap" id="progressWrap">
+        <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
+        <div class="progress-text"><span id="progressLeft"></span><span id="progressRight"></span></div>
+      </div>
     </div>
 
     <div class="subtitle-panel">
@@ -392,17 +475,71 @@ function generateHTML() {
       setStatus(data.success ? '✅ SRT 已保存: ' + data.path : '❌ 导出失败', !data.success);
     }
 
+    function fmtTime(sec) {
+      if (sec <= 0) return '0秒';
+      const m = Math.floor(sec / 60), s = sec % 60;
+      return m > 0 ? m + '分' + s + '秒' : s + '秒';
+    }
+
     async function burnSubtitles() {
-      if (!confirm('确认烧录字幕？')) return;
+      if (!confirm('确认烧录字幕？\\n\\n点击确定开始')) return;
+
       const outline = document.getElementById('outline').value;
-      setStatus('烧录中，请稍候...');
-      const res = await fetch('/api/burn', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ outline })
-      });
-      const data = await res.json();
-      setStatus(data.success ? '✅ 烧录完成: ' + data.path : '❌ 烧录失败: ' + data.error, !data.success);
+      const progressWrap = document.getElementById('progressWrap');
+      const progressFill = document.getElementById('progressFill');
+      const progressLeft = document.getElementById('progressLeft');
+      const progressRight = document.getElementById('progressRight');
+
+      progressWrap.classList.add('active');
+      progressFill.style.width = '0%';
+      setStatus('🎬 烧录中... 准备编码');
+
+      try {
+        const res = await fetch('/api/burn', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ outline })
+        });
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          // 解析 SSE data 行
+          const lines = buf.split('\\n');
+          buf = lines.pop(); // 保留不完整的行
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const d = JSON.parse(line.slice(6));
+            if (d.done) {
+              progressFill.style.width = '100%';
+              progressLeft.textContent = '100%';
+              progressRight.textContent = \`耗时 \${fmtTime(Math.round(parseFloat(d.elapsed)))}\`;
+              setStatus(\`✅ 烧录完成 (耗时\${d.elapsed}s): \${d.path}\`);
+              setTimeout(() => progressWrap.classList.remove('active'), 5000);
+              return;
+            }
+            if (d.error) {
+              setStatus('❌ 烧录失败: ' + d.error, true);
+              progressWrap.classList.remove('active');
+              return;
+            }
+            // 更新进度
+            progressFill.style.width = d.percent + '%';
+            progressLeft.textContent = d.percent + '%';
+            const speedText = d.speed > 0 ? \` | \${d.speed}x\` : '';
+            progressRight.textContent = \`剩余 \${fmtTime(d.remaining)}\${speedText}\`;
+            setStatus(\`🎬 烧录中... \${d.percent}% | 剩余 \${fmtTime(d.remaining)}\`);
+          }
+        }
+      } catch(err) {
+        setStatus('❌ 请求失败: ' + err.message, true);
+        progressWrap.classList.remove('active');
+      }
     }
 
     function setStatus(msg, isError = false) {

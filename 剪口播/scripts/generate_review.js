@@ -149,13 +149,84 @@ const html = `<!DOCTYPE html>
     }
 
     .help {
-      font-size: 12px;
+      font-size: 13px;
+      color: #999;
+      margin-top: 10px;
+      background: #252525;
+      padding: 12px;
+      border-radius: 6px;
+      line-height: 1.8;
+    }
+    .help b { color: #fff; }
+    .help div { margin: 2px 0; }
+
+    /* Loading 遮罩 */
+    .loading-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.85);
+      z-index: 9999;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+    }
+    .loading-overlay.show { display: flex; }
+    .loading-spinner {
+      width: 60px;
+      height: 60px;
+      border: 4px solid #333;
+      border-top-color: #9C27B0;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text {
+      margin-top: 20px;
+      font-size: 18px;
+      color: #fff;
+    }
+    .loading-progress-container {
+      margin-top: 20px;
+      width: 300px;
+      height: 8px;
+      background: #333;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .loading-progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #9C27B0, #E91E63);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+    .loading-time {
+      margin-top: 15px;
+      font-size: 14px;
+      color: #888;
+    }
+    .loading-estimate {
+      margin-top: 8px;
+      font-size: 13px;
       color: #666;
-      margin-top: 5px;
     }
   </style>
 </head>
 <body>
+  <!-- Loading 遮罩 -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">🎬 正在剪辑中...</div>
+    <div class="loading-progress-container">
+      <div class="loading-progress-bar" id="loadingProgress"></div>
+    </div>
+    <div class="loading-time" id="loadingTime">已等待 0 秒</div>
+    <div class="loading-estimate" id="loadingEstimate">预估剩余: 计算中...</div>
+  </div>
+
   <h1>审核稿</h1>
 
   <div class="controls">
@@ -175,7 +246,11 @@ const html = `<!DOCTYPE html>
       <span id="time">00:00 / 00:00</span>
     </div>
     <div id="waveform"></div>
-    <div class="help">单击跳转 | 双击选中/取消 | Shift+拖动多选/取消 | 空格播放 | ←→跳转</div>
+    <div class="help">
+      <div><b>🖱️ 鼠标：</b>单击 = 跳转播放 | 双击 = 选中/取消 | Shift+拖动 = 批量选中/取消</div>
+      <div><b>⌨️ 键盘：</b>空格 = 播放/暂停 | ← → = 跳转1秒 | Shift+←→ = 跳转5秒</div>
+      <div><b>🎨 颜色：</b><span style="color:#ff9800">橙色</span> = AI预选 | <span style="color:#f44336">红色删除线</span> = 已确认删除 | 播放时自动跳过选中片段</div>
+    </div>
   </div>
 
   <div class="content" id="content"></div>
@@ -207,11 +282,22 @@ const html = `<!DOCTYPE html>
     let selectStart = -1;
     let selectMode = 'add'; // 'add' or 'remove'
 
-    // 格式化时间
+    // 格式化时间 (用于播放器显示)
     function formatTime(sec) {
       const m = Math.floor(sec / 60);
       const s = Math.floor(sec % 60);
       return \`\${m.toString().padStart(2, '0')}:\${s.toString().padStart(2, '0')}\`;
+    }
+
+    // 格式化时长 (用于剪辑结果显示，带秒数)
+    function formatDuration(sec) {
+      const totalSec = parseFloat(sec);
+      const m = Math.floor(totalSec / 60);
+      const s = (totalSec % 60).toFixed(1);
+      if (m > 0) {
+        return \`\${m}分\${s}秒 (\${totalSec}s)\`;
+      }
+      return \`\${s}秒\`;
     }
 
     // 渲染内容
@@ -396,7 +482,15 @@ const html = `<!DOCTYPE html>
     }
 
     async function executeCut() {
-      if (!confirm('确认执行剪辑？')) return;
+      // 基于视频时长预估剪辑时间
+      const videoDuration = wavesurfer.getDuration();
+      const videoMinutes = (videoDuration / 60).toFixed(1);
+      const estimatedTime = Math.max(5, Math.ceil(videoDuration / 4)); // 经验值：约4倍速处理
+      const estMin = Math.floor(estimatedTime / 60);
+      const estSec = estimatedTime % 60;
+      const estText = estMin > 0 ? \`\${estMin}分\${estSec}秒\` : \`\${estSec}秒\`;
+
+      if (!confirm(\`确认执行剪辑？\\n\\n📹 视频时长: \${videoMinutes} 分钟\\n⏱️ 预计耗时: \${estText}\\n\\n点击确定开始\`)) return;
 
       // 直接发送原始时间戳，不做合并（和预览一致）
       const segments = [];
@@ -406,6 +500,32 @@ const html = `<!DOCTYPE html>
         segments.push({ start: word.start, end: word.end });
       });
 
+      // 显示 loading 并开始计时
+      const overlay = document.getElementById('loadingOverlay');
+      const loadingTimeEl = document.getElementById('loadingTime');
+      const loadingProgress = document.getElementById('loadingProgress');
+      const loadingEstimate = document.getElementById('loadingEstimate');
+      overlay.classList.add('show');
+      loadingEstimate.textContent = \`预估剩余: \${estText}\`;
+
+      const startTime = Date.now();
+      const timer = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        loadingTimeEl.textContent = \`已等待 \${elapsed} 秒\`;
+
+        // 更新进度条（预估进度，最多到95%等待完成）
+        const progress = Math.min(95, (elapsed / estimatedTime) * 100);
+        loadingProgress.style.width = progress + '%';
+
+        // 更新预估剩余时间
+        const remaining = Math.max(0, estimatedTime - elapsed);
+        if (remaining > 0) {
+          loadingEstimate.textContent = \`预估剩余: \${remaining} 秒\`;
+        } else {
+          loadingEstimate.textContent = \`即将完成...\`;
+        }
+      }, 500);
+
       try {
         const res = await fetch('/api/cut', {
           method: 'POST',
@@ -413,12 +533,32 @@ const html = `<!DOCTYPE html>
           body: JSON.stringify(segments)  // 直接发原始数据
         });
         const data = await res.json();
+
+        // 停止计时并隐藏 loading
+        clearInterval(timer);
+        loadingProgress.style.width = '100%';
+        await new Promise(r => setTimeout(r, 300)); // 让进度条动画完成
+        overlay.classList.remove('show');
+        loadingProgress.style.width = '0%'; // 重置
+        const totalTime = ((Date.now() - startTime) / 1000).toFixed(1);
+
         if (data.success) {
-          alert('✅ ' + data.message);
+          const msg = \`✅ 剪辑完成！(耗时 \${totalTime}s)
+
+📁 输出文件: \${data.output}
+
+⏱️ 时间统计:
+   原时长: \${formatDuration(data.originalDuration)}
+   新时长: \${formatDuration(data.newDuration)}
+   删减: \${formatDuration(data.deletedDuration)} (\${data.savedPercent}%)\`;
+          alert(msg);
         } else {
           alert('❌ 剪辑失败: ' + data.error);
         }
       } catch (err) {
+        clearInterval(timer);
+        overlay.classList.remove('show');
+        loadingProgress.style.width = '0%'; // 重置
         alert('❌ 请求失败: ' + err.message + '\\n\\n请确保使用 review_server.js 启动服务');
       }
     }
