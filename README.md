@@ -45,6 +45,13 @@ git clone https://github.com/Ceeon/videocut-skills.git ~/.claude/skills/videocut
 cd ~/.claude/skills/videocut
 cp .env.example .env
 # 编辑 .env，填入火山引擎 API Key
+#
+# 新版控制台：
+# VOLCENGINE_API_KEY=xxx
+#
+# 音视频字幕生成 v1（https://www.volcengine.com/docs/6561/80909）：
+# VOLCENGINE_APPID=xxx
+# VOLCENGINE_ACCESS_TOKEN=xxx
 ```
 
 ### 3. 安装环境

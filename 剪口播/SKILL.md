@@ -298,4 +298,8 @@ node "$SKILL_DIR/scripts/review_server.js" 8899 "$VIDEO_PATH"
 cd /Users/chengfeng/Desktop/AIos/剪辑Agent/.claude/skills
 cp .env.example .env
 # 编辑 .env 填入 VOLCENGINE_API_KEY=xxx
+#
+# 如使用音视频字幕生成 v1：
+# VOLCENGINE_APPID=xxx
+# VOLCENGINE_ACCESS_TOKEN=xxx
 ```

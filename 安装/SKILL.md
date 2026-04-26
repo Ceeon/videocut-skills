@@ -40,13 +40,17 @@ pos: 前置 skill，首次使用前运行
 
 1. 注册火山引擎账号
 2. 开通语音识别服务
-3. 获取 API Key
+3. 获取 API Key；如使用音视频字幕生成 v1，还需获取 AppID 和 Access Token
 
 配置到项目目录 `.claude/skills/.env`：
 
 ```bash
 # 文件路径：剪辑Agent/.claude/skills/.env
 VOLCENGINE_API_KEY=your_api_key_here
+
+# 可选：音视频字幕生成 v1
+VOLCENGINE_APPID=your_appid_here
+VOLCENGINE_ACCESS_TOKEN=your_access_token_here
 ```
 
 ## 安装流程
@@ -77,6 +81,10 @@ ffmpeg -version
 ```bash
 # 在项目 .claude/skills/ 目录下创建 .env 文件
 echo "VOLCENGINE_API_KEY=your_key" >> .claude/skills/.env
+
+# 如果使用音视频字幕生成 v1：
+echo "VOLCENGINE_APPID=your_appid" >> .claude/skills/.env
+echo "VOLCENGINE_ACCESS_TOKEN=your_access_token" >> .claude/skills/.env
 ```
 
 ### 3. 验证环境
