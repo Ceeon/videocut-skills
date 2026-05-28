@@ -44,6 +44,41 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // API: 保存选中状态
+  if (req.method === 'POST' && req.url === '/api/save-selection') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        fs.writeFileSync('saved_selection.json', body);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // API: 读取选中状态
+  if (req.method === 'GET' && req.url === '/api/load-selection') {
+    try {
+      if (fs.existsSync('saved_selection.json')) {
+        const data = fs.readFileSync('saved_selection.json', 'utf8');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(data);
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'no saved selection' }));
+      }
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // API: 执行剪辑
   if (req.method === 'POST' && req.url === '/api/cut') {
     let body = '';
